@@ -17,7 +17,6 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'clave-segura-cambiala';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
 console.log('🚀 Iniciando FluxyProtect...');
-console.log('📌 FRONTEND_URL:', FRONTEND_URL);
 
 // ============================================
 // CONEXIÓN A MONGODB
@@ -26,7 +25,6 @@ mongoose.connect(MONGODB_URI)
     .then(() => console.log('✅ Conectado a MongoDB Atlas'))
     .catch(err => console.error('❌ Error MongoDB:', err.message));
 
-// Modelo de Usuario
 const UserSchema = new mongoose.Schema({
     discordId: { type: String, unique: true },
     username: String,
@@ -38,7 +36,7 @@ const UserSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 
 // ============================================
-// MIDDLEWARE
+// MIDDLEWARE - CONFIGURACIÓN CRÍTICA
 // ============================================
 app.use(cors({
     origin: FRONTEND_URL,
@@ -47,7 +45,7 @@ app.use(cors({
 app.use(express.json());
 app.use(express.static('public'));
 
-// Sesión con MongoDB Store
+// SESIÓN CON CONFIGURACIÓN ESPECÍFICA PARA RENDER
 const MongoStore = require('connect-mongodb-session')(session);
 const store = new MongoStore({
     uri: MONGODB_URI,
@@ -57,11 +55,11 @@ const store = new MongoStore({
 
 app.use(session({
     secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
+    resave: true,  // CAMBIADO A TRUE
+    saveUninitialized: true,  // CAMBIADO A TRUE
     store: store,
     cookie: {
-        secure: process.env.NODE_ENV === 'production',
+        secure: false,  // CAMBIADO A FALSE PARA PRUEBAS
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días
         sameSite: 'lax',
         httpOnly: true
@@ -72,7 +70,7 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ============================================
-// ESTRATEGIA DE DISCORD (CORREGIDA)
+// ESTRATEGIA DE DISCORD
 // ============================================
 passport.use(new DiscordStrategy({
     clientID: DISCORD_CLIENT_ID,
@@ -90,33 +88,51 @@ passport.use(new DiscordStrategy({
                 avatar: profile.avatar
             });
             await user.save();
-            console.log('✅ Nuevo usuario guardado:', profile.username);
+            console.log('✅ Nuevo usuario guardado');
         } else {
-            console.log('✅ Usuario existente:', profile.username);
+            console.log('✅ Usuario existente');
         }
         return done(null, {
             id: profile.id,
             username: profile.username,
             avatar: profile.avatar,
-            plan: user.plan,
-            obfuscationsUsed: user.obfuscationsUsed
+            plan: user.plan
         });
     } catch (err) {
-        console.error('❌ Error en estrategia Discord:', err);
+        console.error('❌ Error:', err);
         return done(err, null);
     }
 }));
 
 passport.serializeUser((user, done) => {
+    console.log('📦 Serializando usuario:', user.username);
     done(null, user);
 });
 
 passport.deserializeUser((user, done) => {
+    console.log('📦 Deserializando usuario:', user.username);
     done(null, user);
 });
 
 // ============================================
-// RUTAS DE AUTENTICACIÓN (CORREGIDAS)
+// MIDDLEWARE PARA VERIFICAR AUTENTICACIÓN
+// ============================================
+const requireAuth = (req, res, next) => {
+    console.log('🔍 Verificando autenticación...');
+    console.log('📌 req.user:', req.user ? req.user.username : 'NO');
+    console.log('📌 req.session:', req.session ? 'EXISTE' : 'NO');
+    console.log('📌 req.sessionID:', req.sessionID);
+    
+    if (!req.user) {
+        console.log('❌ No autenticado');
+        return res.status(401).json({ error: 'No autenticado' });
+    }
+    console.log('✅ Autenticado');
+    next();
+};
+
+// ============================================
+// RUTAS DE AUTENTICACIÓN
 // ============================================
 app.get('/api/auth/discord', passport.authenticate('discord'));
 
@@ -126,29 +142,28 @@ app.get('/api/auth/discord/callback',
         failureMessage: true 
     }),
     (req, res) => {
-        console.log('🔑 Callback ejecutado, usuario:', req.user ? req.user.username : 'NO');
-        const user = req.user;
-        if (user) {
+        console.log('🔑 Callback ejecutado');
+        console.log('📌 Usuario:', req.user ? req.user.username : 'NO');
+        console.log('📌 Session ID:', req.sessionID);
+        
+        // GUARDAR SESIÓN EXPLÍCITAMENTE
+        req.session.save((err) => {
+            if (err) {
+                console.error('❌ Error guardando sesión:', err);
+                return res.redirect('/');
+            }
+            console.log('✅ Sesión guardada correctamente');
+            const user = req.user;
             const redirectUrl = `/?user=${encodeURIComponent(user.username)}&id=${user.id}&avatar=${user.avatar || '0'}`;
             console.log('🔄 Redirigiendo a:', redirectUrl);
             res.redirect(redirectUrl);
-        } else {
-            console.log('❌ No hay usuario en callback');
-            res.redirect('/');
-        }
+        });
     }
 );
 
 // ============================================
 // RUTAS DE LA API
 // ============================================
-const requireAuth = (req, res, next) => {
-    if (!req.user) {
-        return res.status(401).json({ error: 'No autenticado' });
-    }
-    next();
-};
-
 app.get('/api/data', requireAuth, async (req, res) => {
     try {
         const user = await User.findOne({ discordId: req.user.id });
@@ -165,7 +180,7 @@ app.get('/api/data', requireAuth, async (req, res) => {
             apiKeyExpiry: null
         });
     } catch (err) {
-        console.error('Error en /api/data:', err);
+        console.error('Error:', err);
         res.status(500).json({ error: 'Error interno' });
     }
 });
@@ -178,18 +193,22 @@ app.get('/api/auth/logout', (req, res) => {
 });
 
 // ============================================
+// RUTA PARA VERIFICAR SESIÓN (DEBUG)
+// ============================================
+app.get('/api/check-session', (req, res) => {
+    res.json({
+        hasUser: !!req.user,
+        user: req.user ? req.user.username : null,
+        sessionID: req.sessionID,
+        session: req.session ? 'EXISTE' : 'NO'
+    });
+});
+
+// ============================================
 // SERVIR EL FRONTEND
 // ============================================
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// ============================================
-// MANEJO DE ERRORES
-// ============================================
-app.use((err, req, res, next) => {
-    console.error('❌ Error global:', err);
-    res.status(500).send('Error interno del servidor');
 });
 
 app.listen(PORT, '0.0.0.0', () => {
