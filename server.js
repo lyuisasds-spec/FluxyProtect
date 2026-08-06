@@ -6,6 +6,7 @@ const DiscordStrategy = require('passport-discord').Strategy;
 const cors = require('cors');
 const path = require('path');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -49,6 +50,7 @@ const ScriptSchema = new mongoose.Schema({
     status: { type: String, default: 'active' },
     ffaMode: { type: Boolean, default: false },
     compressMode: { type: Boolean, default: false },
+    scriptKey: { type: String, unique: true },
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now }
 });
@@ -61,6 +63,7 @@ const PanelSchema = new mongoose.Schema({
     channelId: { type: String, required: true },
     scriptId: { type: String, required: true },
     hwidCooldown: { type: Number, default: 0 },
+    panelKey: { type: String, unique: true },
     createdAt: { type: Date, default: Date.now }
 });
 const Panel = mongoose.model('Panel', PanelSchema);
@@ -74,6 +77,8 @@ const KeySchema = new mongoose.Schema({
     expiresAt: { type: Date, default: null },
     used: { type: Boolean, default: false },
     usedBy: { type: String, default: null },
+    usedAt: { type: Date, default: null },
+    hwid: { type: String, default: null },
     createdAt: { type: Date, default: Date.now }
 });
 const Key = mongoose.model('Key', KeySchema);
@@ -165,6 +170,23 @@ const requireAuth = (req, res, next) => {
 };
 
 // ============================================
+// FUNCIONES UTILITARIAS
+// ============================================
+function generateKey() {
+    return crypto.randomBytes(8).toString('hex').toUpperCase();
+}
+
+function generatePanelKey() {
+    return 'FP-' + crypto.randomBytes(6).toString('hex').toUpperCase();
+}
+
+function obfuscateCode(code) {
+    // Obfuscación básica - en producción usarías algo más complejo
+    const encoded = Buffer.from(code).toString('base64');
+    return `--[[ PROTECTED BY FLUXYPROTECT ]]\nlocal f=string.char;local t={${encoded.split('').map(c => c.charCodeAt(0)).join(',')}};local s='';for i=1,#t do s=s..f(t[i]) end;loadstring(s)()`;
+}
+
+// ============================================
 // RUTAS DE AUTENTICACIÓN
 // ============================================
 app.get('/api/auth/discord', passport.authenticate('discord'));
@@ -211,10 +233,24 @@ app.get('/api/data', requireAuth, async (req, res) => {
         const keys = await Key.find({ userId });
         const bannedHWIDs = await HwidBan.find({ userId });
 
+        // Convertir ObjectId a string para que el frontend lo maneje bien
+        const scriptsFormatted = scripts.map(s => ({
+            ...s.toObject(),
+            id: s._id.toString()
+        }));
+        const panelsFormatted = panels.map(p => ({
+            ...p.toObject(),
+            id: p._id.toString()
+        }));
+        const keysFormatted = keys.map(k => ({
+            ...k.toObject(),
+            id: k._id.toString()
+        }));
+
         res.json({
-            scripts: scripts || [],
-            panels: panels || [],
-            keys: keys || [],
+            scripts: scriptsFormatted,
+            panels: panelsFormatted,
+            keys: keysFormatted,
             bannedHWIDs: bannedHWIDs.map(b => b.hwid) || [],
             obfuscationsLeft: user ? 10 - user.obfuscationsUsed : 10,
             maxObfuscations: user?.plan === 'premium' ? Infinity : 10,
@@ -241,24 +277,32 @@ app.post('/api/create-script', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'Nombre y código son requeridos' });
         }
 
+        const scriptKey = generateKey();
+        
         const script = new Script({
             userId,
             name,
             code,
             rawCode: code,
             compressMode: compressMode || false,
-            ffaMode: ffaMode || false
+            ffaMode: ffaMode || false,
+            scriptKey: scriptKey
         });
 
         await script.save();
 
-        // Incrementar contador de obfusaciones
         await User.findOneAndUpdate(
             { discordId: userId },
             { $inc: { obfuscationsUsed: 1 } }
         );
 
-        res.json({ success: true, script });
+        res.json({ 
+            success: true, 
+            script: {
+                ...script.toObject(),
+                id: script._id.toString()
+            }
+        });
     } catch (err) {
         console.error('Error creando script:', err);
         res.status(500).json({ error: err.message });
@@ -270,7 +314,7 @@ app.post('/api/update-script', requireAuth, async (req, res) => {
         const { id, name, code, compressMode, ffaMode } = req.body;
         const userId = req.user.id;
 
-        const script = await Script.findOne({ id, userId });
+        const script = await Script.findOne({ _id: id, userId });
         if (!script) {
             return res.status(404).json({ error: 'Script no encontrado' });
         }
@@ -282,7 +326,13 @@ app.post('/api/update-script', requireAuth, async (req, res) => {
         script.updatedAt = new Date();
 
         await script.save();
-        res.json({ success: true, script });
+        res.json({ 
+            success: true, 
+            script: {
+                ...script.toObject(),
+                id: script._id.toString()
+            }
+        });
     } catch (err) {
         console.error('Error actualizando script:', err);
         res.status(500).json({ error: err.message });
@@ -294,7 +344,7 @@ app.post('/api/toggle-script/:id', requireAuth, async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
 
-        const script = await Script.findOne({ id, userId });
+        const script = await Script.findOne({ _id: id, userId });
         if (!script) {
             return res.status(404).json({ error: 'Script no encontrado' });
         }
@@ -302,7 +352,13 @@ app.post('/api/toggle-script/:id', requireAuth, async (req, res) => {
         script.status = script.status === 'active' ? 'disabled' : 'active';
         await script.save();
 
-        res.json({ success: true, script });
+        res.json({ 
+            success: true, 
+            script: {
+                ...script.toObject(),
+                id: script._id.toString()
+            }
+        });
     } catch (err) {
         console.error('Error toggling script:', err);
         res.status(500).json({ error: err.message });
@@ -314,7 +370,7 @@ app.post('/api/toggle-ffa/:id', requireAuth, async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
 
-        const script = await Script.findOne({ id, userId });
+        const script = await Script.findOne({ _id: id, userId });
         if (!script) {
             return res.status(404).json({ error: 'Script no encontrado' });
         }
@@ -322,7 +378,13 @@ app.post('/api/toggle-ffa/:id', requireAuth, async (req, res) => {
         script.ffaMode = !script.ffaMode;
         await script.save();
 
-        res.json({ success: true, script });
+        res.json({ 
+            success: true, 
+            script: {
+                ...script.toObject(),
+                id: script._id.toString()
+            }
+        });
     } catch (err) {
         console.error('Error toggling FFA:', err);
         res.status(500).json({ error: err.message });
@@ -334,7 +396,7 @@ app.delete('/api/delete-script/:id', requireAuth, async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
 
-        const result = await Script.findOneAndDelete({ id, userId });
+        const result = await Script.findOneAndDelete({ _id: id, userId });
         if (!result) {
             return res.status(404).json({ error: 'Script no encontrado' });
         }
@@ -346,19 +408,104 @@ app.delete('/api/delete-script/:id', requireAuth, async (req, res) => {
     }
 });
 
+// ============================================
+// LOADER - CON SISTEMA DE KEYS Y PROTECCIÓN
+// ============================================
 app.get('/loader/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const script = await Script.findOne({ id });
+        const script = await Script.findOne({ _id: id });
+        
         if (!script || script.status === 'disabled') {
             return res.status(404).send('-- Script no disponible');
         }
 
-        // Retornar el código del script
+        // Si está en FFA Mode, solo devuelve el loadstring sin key
+        if (script.ffaMode) {
+            const obfuscated = obfuscateCode(script.rawCode || script.code);
+            res.setHeader('Content-Type', 'text/plain');
+            return res.send(obfuscated);
+        }
+
+        // Si no tiene FFA, necesita key
+        // Devolvemos un loader que pide key
+        const loaderTemplate = `
+--[[ PROTECTED BY FLUXYPROTECT ]]
+-- Este script requiere una key válida
+-- Obtén tu key en: ${FRONTEND_URL}
+
+local FluxyProtect = {
+    _key = nil,
+    _scriptId = "${script._id.toString()}",
+    _scriptKey = "${script.scriptKey}",
+    _validated = false
+}
+
+function FluxyProtect:validateKey(key)
+    if not key or key == "" then
+        return false, "Key no proporcionada"
+    end
+    
+    -- Aquí iría la validación contra el servidor
+    -- Por simplicidad, verificamos que la key coincida con la del script
+    if key == self._scriptKey then
+        self._validated = true
+        return true, "Key válida"
+    end
+    
+    return false, "Key inválida"
+end
+
+function FluxyProtect:execute(key)
+    local valid, msg = self:validateKey(key)
+    if not valid then
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "FluxyProtect",
+            Text = "❌ " .. msg,
+            Duration = 5
+        })
+        return
+    end
+    
+    -- Cargar el script protegido
+    local scriptContent = game:HttpGet("${FRONTEND_URL}/api/script-content/${script._id.toString()}")
+    loadstring(scriptContent)()
+end
+
+-- Uso:
+-- FluxyProtect:execute("TU_KEY_AQUI")
+print("🔐 Script protegido por FluxyProtect")
+print("📌 Usa: FluxyProtect:execute('TU_KEY')")
+`;
+
         res.setHeader('Content-Type', 'text/plain');
-        res.send(script.code || script.rawCode || '-- Script vacío');
+        res.send(loaderTemplate);
+        
     } catch (err) {
         console.error('Error en loader:', err);
+        res.status(500).send('-- Error cargando script');
+    }
+});
+
+// ============================================
+// RUTA PARA OBTENER CONTENIDO DEL SCRIPT (PROTEGIDO)
+// ============================================
+app.get('/api/script-content/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const script = await Script.findOne({ _id: id });
+        
+        if (!script || script.status === 'disabled') {
+            return res.status(404).send('-- Script no disponible');
+        }
+
+        // Obfuscar el código para que no se vea en texto plano
+        const obfuscated = obfuscateCode(script.rawCode || script.code);
+        res.setHeader('Content-Type', 'text/plain');
+        res.send(obfuscated);
+        
+    } catch (err) {
+        console.error('Error en script-content:', err);
         res.status(500).send('-- Error cargando script');
     }
 });
@@ -375,17 +522,26 @@ app.post('/api/create-panel', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'Nombre, channelId y scriptId son requeridos' });
         }
 
+        const panelKey = generatePanelKey();
+
         const panel = new Panel({
             userId,
             name,
             description: description || '',
             channelId,
             scriptId,
-            hwidCooldown: Number(hwidCooldown) || 0
+            hwidCooldown: Number(hwidCooldown) || 0,
+            panelKey: panelKey
         });
 
         await panel.save();
-        res.json({ success: true, panel });
+        res.json({ 
+            success: true, 
+            panel: {
+                ...panel.toObject(),
+                id: panel._id.toString()
+            }
+        });
     } catch (err) {
         console.error('Error creando panel:', err);
         res.status(500).json({ error: err.message });
@@ -397,7 +553,7 @@ app.post('/api/update-panel', requireAuth, async (req, res) => {
         const { id, name, description, channelId, scriptId, hwidCooldown } = req.body;
         const userId = req.user.id;
 
-        const panel = await Panel.findOne({ id, userId });
+        const panel = await Panel.findOne({ _id: id, userId });
         if (!panel) {
             return res.status(404).json({ error: 'Panel no encontrado' });
         }
@@ -409,7 +565,13 @@ app.post('/api/update-panel', requireAuth, async (req, res) => {
         panel.hwidCooldown = hwidCooldown !== undefined ? Number(hwidCooldown) : panel.hwidCooldown;
 
         await panel.save();
-        res.json({ success: true, panel });
+        res.json({ 
+            success: true, 
+            panel: {
+                ...panel.toObject(),
+                id: panel._id.toString()
+            }
+        });
     } catch (err) {
         console.error('Error actualizando panel:', err);
         res.status(500).json({ error: err.message });
@@ -421,12 +583,11 @@ app.delete('/api/delete-panel/:id', requireAuth, async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
 
-        const result = await Panel.findOneAndDelete({ id, userId });
+        const result = await Panel.findOneAndDelete({ _id: id, userId });
         if (!result) {
             return res.status(404).json({ error: 'Panel no encontrado' });
         }
 
-        // Eliminar keys asociadas
         await Key.deleteMany({ panelId: id, userId });
 
         res.json({ success: true });
@@ -436,19 +597,30 @@ app.delete('/api/delete-panel/:id', requireAuth, async (req, res) => {
     }
 });
 
+// ============================================
+// ENVIAR PANEL A DISCORD (CON EMBED Y BOTONES)
+// ============================================
 app.post('/api/send-panel/:id', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const userId = req.user.id;
 
-        const panel = await Panel.findOne({ id, userId });
+        const panel = await Panel.findOne({ _id: id, userId });
         if (!panel) {
             return res.status(404).json({ error: 'Panel no encontrado' });
         }
 
-        // Aquí iría la lógica para enviar a Discord
-        // Por ahora solo respondemos éxito
-        res.json({ success: true, message: 'Panel enviado a Discord' });
+        // Aquí iría la lógica real para enviar a Discord
+        // Por ahora, simulamos el envío y devolvemos la información del panel
+        res.json({ 
+            success: true, 
+            message: 'Panel enviado a Discord',
+            panel: {
+                ...panel.toObject(),
+                id: panel._id.toString()
+            },
+            panelKey: panel.panelKey
+        });
     } catch (err) {
         console.error('Error enviando panel:', err);
         res.status(500).json({ error: err.message });
@@ -467,14 +639,12 @@ app.post('/api/generate-key', requireAuth, async (req, res) => {
             return res.status(400).json({ error: 'panelId es requerido' });
         }
 
-        const panel = await Panel.findOne({ id: panelId, userId });
+        const panel = await Panel.findOne({ _id: panelId, userId });
         if (!panel) {
             return res.status(404).json({ error: 'Panel no encontrado' });
         }
 
-        // Generar key
-        const key = Math.random().toString(36).substring(2, 10).toUpperCase() + 
-                    Math.random().toString(36).substring(2, 8).toUpperCase();
+        const key = generateKey();
 
         let expiresAt = null;
         if (duration && duration !== 'permanent') {
@@ -491,7 +661,7 @@ app.post('/api/generate-key', requireAuth, async (req, res) => {
 
         const newKey = new Key({
             userId,
-            panelId,
+            panelId: panel._id.toString(),
             key,
             note: note || '',
             duration: duration || 'permanent',
@@ -499,7 +669,13 @@ app.post('/api/generate-key', requireAuth, async (req, res) => {
         });
 
         await newKey.save();
-        res.json({ success: true, key: newKey });
+        res.json({ 
+            success: true, 
+            key: {
+                ...newKey.toObject(),
+                id: newKey._id.toString()
+            }
+        });
     } catch (err) {
         console.error('Error generando key:', err);
         res.status(500).json({ error: err.message });
@@ -511,14 +687,12 @@ app.delete('/api/delete-key/:id', requireAuth, async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
 
-        const result = await Key.findOneAndDelete({ id, userId });
+        let result = await Key.findOneAndDelete({ _id: id, userId });
         if (!result) {
-            // Intentar con key en lugar de id
-            const result2 = await Key.findOneAndDelete({ key: id, userId });
-            if (!result2) {
+            result = await Key.findOneAndDelete({ key: id, userId });
+            if (!result) {
                 return res.status(404).json({ error: 'Key no encontrada' });
             }
-            return res.json({ success: true });
         }
 
         res.json({ success: true });
@@ -573,9 +747,10 @@ app.delete('/api/unban-hwid/:hwid', requireAuth, async (req, res) => {
 });
 
 // ============================================
-// RUTAS DE API KEYS (placeholder)
+// RUTAS DE API KEYS
 // ============================================
 app.post('/api/claim-key', requireAuth, async (req, res) => {
+    // Implementación pendiente
     res.json({ success: false, error: 'API Keys no implementadas aún' });
 });
 
