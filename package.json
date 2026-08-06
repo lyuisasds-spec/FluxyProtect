@@ -22,5 +22,10 @@
   },
   "engines": {
     "node": ">=16.0.0"
+  },
+  
+  "scripts": {
+    "start": "node server.js",
+    "bot": "node bot.js"
   }
 }
