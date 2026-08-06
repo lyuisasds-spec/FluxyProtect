@@ -1071,39 +1071,47 @@
     let editingScriptId = null, editingPanelId = null;
     let activeScriptId = null, activePanelId = null, activeKeysPanelId = null;
 
-    function checkLogin() {
-        const urlParams = new URLSearchParams(window.location.search || window.location.hash.replace('#', '?'));
-        let user = urlParams.get('user');
-        let id = urlParams.get('id');
-        let avatar = urlParams.get('avatar');
+function checkLogin() {
+    const urlParams = new URLSearchParams(window.location.search || window.location.hash.replace('#', '?'));
+    let user = urlParams.get('user');
+    let id = urlParams.get('id');
+    let avatar = urlParams.get('avatar');
 
-        if (user && id) {
-            localStorage.setItem('lp_user', user);
-            localStorage.setItem('lp_id', id);
-            localStorage.setItem('lp_avatar', avatar || '');
-            window.history.replaceState({}, document.title, "/");
-        } else {
-            user = localStorage.getItem('lp_user');
-            id = localStorage.getItem('lp_id');
-            avatar = localStorage.getItem('lp_avatar');
-        }
+    console.log('🔍 checkLogin ejecutado');
+    console.log('📌 user:', user);
+    console.log('📌 id:', id);
 
-        if (user && id) {
-            document.getElementById('auth-wrapper').style.display = 'none';
-            document.getElementById('dashboard-content').style.display = 'flex';
-            document.getElementById('displayUsername').innerText = user;
-            document.getElementById('displayUserId').innerText = `ID: ${id}`;
-            const avatarUrl = (avatar && avatar !== 'null') 
-                ? `https://cdn.discordapp.com/avatars/${id}/${avatar}.png` 
-                : `https://cdn.discordapp.com/embed/avatars/0.png`;
-            document.getElementById('userAvatar').src = avatarUrl;
-            loadDashboardData(true);
-        } else {
-            document.getElementById('auth-wrapper').style.display = 'flex';
-            document.getElementById('dashboard-content').style.display = 'none';
-        }
+    if (user && id) {
+        localStorage.setItem('lp_user', user);
+        localStorage.setItem('lp_id', id);
+        localStorage.setItem('lp_avatar', avatar || '');
+        window.history.replaceState({}, document.title, "/");
+        console.log('✅ Datos guardados en localStorage');
+    } else {
+        user = localStorage.getItem('lp_user');
+        id = localStorage.getItem('lp_id');
+        avatar = localStorage.getItem('lp_avatar');
+        console.log('📌 Leyendo de localStorage:', user);
     }
 
+    // SIMPRE mostrar el dashboard si hay usuario en localStorage
+    if (user && id) {
+        document.getElementById('auth-wrapper').style.display = 'none';
+        document.getElementById('dashboard-content').style.display = 'flex';
+        document.getElementById('displayUsername').innerText = user;
+        document.getElementById('displayUserId').innerText = `ID: ${id}`;
+        const avatarUrl = (avatar && avatar !== 'null') 
+            ? `https://cdn.discordapp.com/avatars/${id}/${avatar}.png` 
+            : `https://cdn.discordapp.com/embed/avatars/0.png`;
+        document.getElementById('userAvatar').src = avatarUrl;
+        console.log('✅ Dashboard mostrado');
+        loadDashboardData(true);
+    } else {
+        console.log('❌ No hay usuario, mostrando login');
+        document.getElementById('auth-wrapper').style.display = 'flex';
+        document.getElementById('dashboard-content').style.display = 'none';
+    }
+}
     async function loadDashboardData(isInitialLoad = false) {
         try {
             const res = await fetch('/api/data', { headers: getHeaders() });
