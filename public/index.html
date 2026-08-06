@@ -1037,31 +1037,96 @@
     // ========================================
     // API HELPERS
     // ========================================
-    function getHeaders() {
-        return {
-            'Content-Type': 'application/json',
-            'X-User-Id': localStorage.getItem('lp_id') || ''
-        };
-    }
+// ============================================
+// FUNCIONES ACTUALIZADAS PARA EL HTML
+// ============================================
 
-    function logout() {
-        localStorage.clear();
-        window.location.href = '/api/auth/logout';
-    }
+function getHeaders() {
+    return {
+        'Content-Type': 'application/json',
+        'X-User-Id': localStorage.getItem('lp_id') || ''
+    };
+}
 
-    function copyLoadstring(el) {
-        let text = typeof el === 'string' ? el : el.value;
-        navigator.clipboard.writeText(text).then(() => {
-            alert("✅ Copied to clipboard!");
-        }).catch(() => {
-            if (typeof el !== 'string') {
-                el.select();
-                el.setSelectionRange(0, 99999);
-                document.execCommand('copy');
-                alert("✅ Copied to clipboard!");
+function checkLogin() {
+    console.log('🔍 checkLogin ejecutado');
+    
+    // Intentar obtener datos de la URL (después del login)
+    const urlParams = new URLSearchParams(window.location.search);
+    let user = urlParams.get('user');
+    let id = urlParams.get('id');
+    let avatar = urlParams.get('avatar');
+    
+    console.log('📌 user (URL):', user);
+    console.log('📌 id (URL):', id);
+    
+    if (user && id) {
+        // Guardar en localStorage
+        localStorage.setItem('lp_user', user);
+        localStorage.setItem('lp_id', id);
+        localStorage.setItem('lp_avatar', avatar || '');
+        // Limpiar URL
+        window.history.replaceState({}, document.title, "/");
+        console.log('✅ Datos guardados en localStorage');
+    } else {
+        // Intentar recuperar de localStorage
+        user = localStorage.getItem('lp_user');
+        id = localStorage.getItem('lp_id');
+        avatar = localStorage.getItem('lp_avatar');
+        console.log('📌 user (localStorage):', user);
+    }
+    
+    // VERIFICAR SESIÓN EN EL SERVIDOR
+    if (user && id) {
+        // Mostrar dashboard inmediatamente
+        showDashboard(user, id, avatar);
+        
+        // Verificar sesión en el servidor
+        fetch('/api/check-session', {
+            credentials: 'include'
+        })
+        .then(res => res.json())
+        .then(data => {
+            console.log('📊 Sesión en servidor:', data);
+            if (!data.hasUser) {
+                console.log('⚠️ Sesión no válida en servidor, intentando re-login');
+                // Opcional: forzar re-login si la sesión expiró
             }
-        });
+        })
+        .catch(err => console.error('Error verificando sesión:', err));
+    } else {
+        console.log('❌ No hay usuario, mostrando login');
+        document.getElementById('auth-wrapper').style.display = 'flex';
+        document.getElementById('dashboard-content').style.display = 'none';
     }
+}
+
+function showDashboard(user, id, avatar) {
+    document.getElementById('auth-wrapper').style.display = 'none';
+    document.getElementById('dashboard-content').style.display = 'flex';
+    document.getElementById('displayUsername').innerText = user;
+    document.getElementById('displayUserId').innerText = `ID: ${id}`;
+    
+    const avatarUrl = (avatar && avatar !== 'null' && avatar !== '0') 
+        ? `https://cdn.discordapp.com/avatars/${id}/${avatar}.png` 
+        : `https://cdn.discordapp.com/embed/avatars/0.png`;
+    document.getElementById('userAvatar').src = avatarUrl;
+    
+    console.log('✅ Dashboard mostrado');
+    loadDashboardData(true);
+}
+
+// ============================================
+// FUNCIÓN DE LOGOUT MEJORADA
+// ============================================
+function logout() {
+    localStorage.clear();
+    // Limpiar cookies manualmente
+    document.cookie.split(";").forEach(function(c) { 
+        document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/"); 
+    });
+    window.location.href = '/api/auth/logout';
+}
 
     // ========================================
     // DASHBOARD DATA LOADING
