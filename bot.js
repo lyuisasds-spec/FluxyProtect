@@ -1,8 +1,6 @@
-// bot.js - Bot de Discord para FluxyProtect
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes } = require('discord.js');
 const mongoose = require('mongoose');
-const axios = require('axios');
 
 // ============================================
 // CONFIGURACION
@@ -10,6 +8,11 @@ const axios = require('axios');
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://fluxyprotect.onrender.com';
+const CLIENT_ID = process.env.DISCORD_CLIENT_ID || '1534991329786986506';
+
+console.log('🤖 Iniciando bot...');
+console.log('📡 FRONTEND_URL:', FRONTEND_URL);
+console.log('📡 CLIENT_ID:', CLIENT_ID);
 
 // ============================================
 // CONEXION A MONGODB
@@ -18,7 +21,9 @@ mongoose.connect(MONGODB_URI)
     .then(() => console.log('✅ Bot conectado a MongoDB Atlas'))
     .catch(err => console.error('❌ Error MongoDB:', err.message));
 
-// Modelos
+// ============================================
+// MODELOS
+// ============================================
 const PanelSchema = new mongoose.Schema({
     userId: { type: String, required: true },
     name: { type: String, required: true },
@@ -27,6 +32,8 @@ const PanelSchema = new mongoose.Schema({
     scriptId: { type: String, required: true },
     hwidCooldown: { type: Number, default: 0 },
     panelKey: { type: String, unique: true },
+    pendingSend: { type: Boolean, default: false },
+    sentToDiscord: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now }
 });
 const Panel = mongoose.model('Panel', PanelSchema);
@@ -82,65 +89,47 @@ const client = new Client({
 });
 
 // ============================================
-// EVENTOS DEL BOT
-// ============================================
-client.once('clientReady', () => {
-    console.log(`✅ Bot conectado como ${client.user.tag}`);
-    console.log(`📡 Servidor en: ${FRONTEND_URL}`);
-});
-
-// ============================================
-// FUNCIONES AUXILIARES
-// ============================================
-function generateKey() {
-    return Math.random().toString(36).substring(2, 10).toUpperCase() + 
-           Math.random().toString(36).substring(2, 8).toUpperCase();
-}
-
-function generatePanelKey() {
-    return 'FP-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-}
-
-async function getScriptName(scriptId) {
-    try {
-        const script = await Script.findOne({ _id: scriptId });
-        return script ? script.name : 'Script no encontrado';
-    } catch {
-        return 'Script no encontrado';
-    }
-}
-
-async function getPanelKeys(panelId) {
-    const total = await Key.countDocuments({ panelId: panelId });
-    const used = await Key.countDocuments({ panelId: panelId, used: true });
-    return { total, used, available: total - used };
-}
-
-// ============================================
 // FUNCION PARA ENVIAR PANEL A DISCORD
 // ============================================
 async function sendPanelToDiscord(panelId, channelId) {
+    console.log(`📤 Intentando enviar panel ${panelId} al canal ${channelId}`);
+    
     try {
         const panel = await Panel.findOne({ _id: panelId });
-        if (!panel) return { success: false, error: 'Panel no encontrado' };
+        if (!panel) {
+            console.log('❌ Panel no encontrado');
+            return { success: false, error: 'Panel no encontrado' };
+        }
+
+        console.log(`📋 Panel: ${panel.name} (${panel.panelKey})`);
 
         const script = await Script.findOne({ _id: panel.scriptId });
-        if (!script) return { success: false, error: 'Script no encontrado' };
+        if (!script) {
+            console.log('❌ Script no encontrado');
+            return { success: false, error: 'Script no encontrado' };
+        }
 
-        const stats = await getPanelKeys(panel._id.toString());
+        console.log(`📜 Script: ${script.name}`);
+
+        // Estadisticas de keys
+        const totalKeys = await Key.countDocuments({ panelId: panel._id.toString() });
+        const usedKeys = await Key.countDocuments({ panelId: panel._id.toString(), used: true });
+        const availableKeys = totalKeys - usedKeys;
+
+        console.log(`🔑 Keys: ${availableKeys} disponibles / ${totalKeys} totales`);
 
         // Crear embed
         const embed = new EmbedBuilder()
-            .setTitle(`${panel.name}`)
+            .setTitle(panel.name)
             .setDescription(panel.description || 'Panel de proteccion FluxyProtect')
             .setColor('#00d4ff')
             .addFields(
                 { name: 'Script', value: `\`${script.name}\``, inline: true },
                 { name: 'Panel Key', value: `\`${panel.panelKey}\``, inline: true },
                 { name: 'Cooldown', value: `${panel.hwidCooldown || 0} segundos`, inline: true },
-                { name: 'Keys Disponibles', value: `${stats.available}`, inline: true },
-                { name: 'Keys Usadas', value: `${stats.used}`, inline: true },
-                { name: 'Total Keys', value: `${stats.total}`, inline: true }
+                { name: 'Keys Disponibles', value: `${availableKeys}`, inline: true },
+                { name: 'Keys Usadas', value: `${usedKeys}`, inline: true },
+                { name: 'Total Keys', value: `${totalKeys}`, inline: true }
             )
             .setFooter({ text: 'FluxyProtect - Advanced Protection' })
             .setTimestamp();
@@ -166,21 +155,184 @@ async function sendPanelToDiscord(panelId, channelId) {
                     .setCustomId(`reset_hwid_${panel._id}`)
             );
 
-        // Enviar al canal
+        // Obtener el canal
+        console.log(`🔍 Buscando canal: ${channelId}`);
         const channel = await client.channels.fetch(channelId);
-        if (!channel) return { success: false, error: 'Canal no encontrado' };
+        
+        if (!channel) {
+            console.log('❌ Canal no encontrado');
+            return { success: false, error: 'Canal no encontrado' };
+        }
 
+        console.log(`✅ Canal encontrado: ${channel.name} (${channel.id})`);
+
+        // Enviar mensaje
         await channel.send({ embeds: [embed], components: [row] });
+        console.log(`✅ Panel enviado a ${channel.name}`);
+        
+        // Marcar como enviado
+        panel.sentToDiscord = true;
+        panel.pendingSend = false;
+        await panel.save();
+
         return { success: true };
 
     } catch (error) {
-        console.error('Error enviando panel:', error);
+        console.error('❌ Error enviando panel:', error.message);
         return { success: false, error: error.message };
     }
 }
 
 // ============================================
-// COMANDOS SLASH
+// MONITOREO DE PANELES PENDIENTES
+// ============================================
+async function checkPendingPanels() {
+    console.log('🔄 Revisando paneles pendientes...');
+    
+    try {
+        const panels = await Panel.find({ pendingSend: true, sentToDiscord: false });
+        console.log(`📋 Encontrados ${panels.length} paneles pendientes`);
+        
+        if (panels.length === 0) {
+            return;
+        }
+        
+        for (const panel of panels) {
+            console.log(`📤 Enviando panel: ${panel.name} (${panel._id})`);
+            console.log(`📌 Channel ID: ${panel.channelId}`);
+            
+            const result = await sendPanelToDiscord(panel._id.toString(), panel.channelId);
+            
+            if (result.success) {
+                console.log(`✅ Panel enviado: ${panel.name}`);
+            } else {
+                console.error(`❌ Error enviando panel ${panel.name}:`, result.error);
+            }
+        }
+    } catch (error) {
+        console.error('❌ Error en checkPendingPanels:', error.message);
+    }
+}
+
+// ============================================
+// REGISTRAR COMANDOS SLASH (USANDO REST API)
+// ============================================
+async function registerCommands() {
+    try {
+        const commands = [
+            {
+                name: 'keygen',
+                description: 'Genera una key para un panel',
+                options: [
+                    {
+                        name: 'panelkey',
+                        description: 'La key del panel',
+                        type: 3,
+                        required: true
+                    },
+                    {
+                        name: 'duration',
+                        description: 'Duracion de la key',
+                        type: 3,
+                        required: false,
+                        choices: [
+                            { name: '1 Hora', value: '1h' },
+                            { name: '1 Dia', value: '1d' },
+                            { name: '1 Semana', value: '1w' },
+                            { name: '1 Mes', value: '1m' },
+                            { name: '1 Año', value: '1y' },
+                            { name: 'Permanente', value: 'permanent' }
+                        ]
+                    },
+                    {
+                        name: 'note',
+                        description: 'Nota para la key',
+                        type: 3,
+                        required: false
+                    }
+                ]
+            },
+            {
+                name: 'blacklist',
+                description: 'Agrega un usuario a la blacklist de un panel',
+                options: [
+                    {
+                        name: 'usuario',
+                        description: 'El usuario a blacklistear',
+                        type: 6,
+                        required: true
+                    },
+                    {
+                        name: 'panelkey',
+                        description: 'La key del panel',
+                        type: 3,
+                        required: true
+                    },
+                    {
+                        name: 'razon',
+                        description: 'Razon del blacklist',
+                        type: 3,
+                        required: false
+                    }
+                ]
+            },
+            {
+                name: 'resethwid',
+                description: 'Resetea el HWID de un usuario en un panel',
+                options: [
+                    {
+                        name: 'usuario',
+                        description: 'El usuario a resetear',
+                        type: 6,
+                        required: true
+                    },
+                    {
+                        name: 'panelkey',
+                        description: 'La key del panel',
+                        type: 3,
+                        required: true
+                    }
+                ]
+            }
+        ];
+
+        const rest = new REST({ version: '10' }).setToken(DISCORD_BOT_TOKEN);
+
+        console.log('📝 Registrando comandos slash...');
+        
+        await rest.put(
+            Routes.applicationCommands(CLIENT_ID),
+            { body: commands }
+        );
+
+        console.log('✅ Comandos slash registrados globalmente');
+        console.log('⚠️ Los comandos globales pueden tardar hasta 1 hora en aparecer');
+        console.log('💡 Para probar inmediato, usa el comando /keygen en el servidor');
+
+    } catch (error) {
+        console.error('❌ Error registrando comandos:', error);
+    }
+}
+
+// ============================================
+// EVENTOS DEL BOT
+// ============================================
+client.once('ready', () => {
+    console.log(`✅ Bot conectado como ${client.user.tag}`);
+    console.log(`📡 Servidor en: ${FRONTEND_URL}`);
+    console.log(`📋 Revisando paneles pendientes cada 15 segundos...`);
+    
+    // Registrar comandos al iniciar
+    registerCommands();
+    
+    // Revisar paneles pendientes cada 15 segundos
+    setInterval(checkPendingPanels, 15000);
+    // Ejecutar una vez al inicio (despues de 3 segundos)
+    setTimeout(checkPendingPanels, 3000);
+});
+
+// ============================================
+// COMANDOS SLASH (INTERACCIONES)
 // ============================================
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
@@ -198,14 +350,30 @@ client.on('interactionCreate', async (interaction) => {
             const duration = options.getString('duration') || 'permanent';
             const note = options.getString('note') || '';
 
+            console.log(`🔑 /keygen - PanelKey: ${panelKey}, Duration: ${duration}, Note: ${note}`);
+
             const panel = await Panel.findOne({ panelKey: panelKey });
             if (!panel) {
                 return interaction.editReply({
-                    content: 'Panel no encontrado. Verifica la Panel Key.'
+                    content: '❌ Panel no encontrado. Verifica la Panel Key.'
                 });
             }
 
-            const newKey = generateKey();
+            // Verificar blacklist
+            const blacklisted = await Blacklist.findOne({
+                discordId: user.id,
+                panelId: panel._id.toString()
+            });
+
+            if (blacklisted) {
+                return interaction.editReply({
+                    content: '❌ Estas blacklistado de este panel. Contacta al administrador.'
+                });
+            }
+
+            const newKey = Math.random().toString(36).substring(2, 10).toUpperCase() + 
+                          Math.random().toString(36).substring(2, 8).toUpperCase();
+            
             let expiresAt = null;
             if (duration !== 'permanent') {
                 const now = new Date();
@@ -229,6 +397,7 @@ client.on('interactionCreate', async (interaction) => {
             });
 
             await key.save();
+            console.log(`✅ Key generada: ${newKey} para panel ${panel.name}`);
 
             const embed = new EmbedBuilder()
                 .setTitle('Key Generada')
@@ -246,7 +415,7 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.editReply({ embeds: [embed], ephemeral: true });
 
         } catch (error) {
-            console.error('Error en keygen:', error);
+            console.error('❌ Error en keygen:', error);
             await interaction.editReply({
                 content: 'Error al generar la key: ' + error.message
             });
@@ -264,14 +433,15 @@ client.on('interactionCreate', async (interaction) => {
             const panelKey = options.getString('panelkey');
             const reason = options.getString('razon') || 'Sin razon';
 
+            console.log(`🚫 /blacklist - Usuario: ${targetUser.tag}, PanelKey: ${panelKey}`);
+
             const panel = await Panel.findOne({ panelKey: panelKey });
             if (!panel) {
                 return interaction.editReply({
-                    content: 'Panel no encontrado. Verifica la Panel Key.'
+                    content: '❌ Panel no encontrado. Verifica la Panel Key.'
                 });
             }
 
-            // Verificar si ya esta blacklistado
             const existing = await Blacklist.findOne({
                 discordId: targetUser.id,
                 panelId: panel._id.toString()
@@ -306,7 +476,7 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.editReply({ embeds: [embed], ephemeral: true });
 
         } catch (error) {
-            console.error('Error en blacklist:', error);
+            console.error('❌ Error en blacklist:', error);
             await interaction.editReply({
                 content: 'Error al blacklistear: ' + error.message
             });
@@ -323,14 +493,15 @@ client.on('interactionCreate', async (interaction) => {
             const targetUser = options.getUser('usuario');
             const panelKey = options.getString('panelkey');
 
+            console.log(`🔄 /resethwid - Usuario: ${targetUser.tag}, PanelKey: ${panelKey}`);
+
             const panel = await Panel.findOne({ panelKey: panelKey });
             if (!panel) {
                 return interaction.editReply({
-                    content: 'Panel no encontrado. Verifica la Panel Key.'
+                    content: '❌ Panel no encontrado. Verifica la Panel Key.'
                 });
             }
 
-            // Buscar keys usadas por este usuario
             const keys = await Key.find({
                 panelId: panel._id.toString(),
                 usedBy: targetUser.id
@@ -366,7 +537,7 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.editReply({ embeds: [embed], ephemeral: true });
 
         } catch (error) {
-            console.error('Error en resethwid:', error);
+            console.error('❌ Error en resethwid:', error);
             await interaction.editReply({
                 content: 'Error al resetear HWID: ' + error.message
             });
@@ -479,16 +650,17 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.editReply({ content: 'Panel no encontrado.' });
                 }
 
-                const stats = await getPanelKeys(panel._id.toString());
+                const totalKeys = await Key.countDocuments({ panelId: panel._id.toString() });
+                const usedKeys = await Key.countDocuments({ panelId: panel._id.toString(), used: true });
+                const availableKeys = totalKeys - usedKeys;
 
                 const embed = new EmbedBuilder()
                     .setTitle(`Estadisticas: ${panel.name}`)
                     .addFields(
-                        { name: 'Total Keys', value: `${stats.total}`, inline: true },
-                        { name: 'Keys Usadas', value: `${stats.used}`, inline: true },
-                        { name: 'Keys Disponibles', value: `${stats.available}`, inline: true },
-                        { name: 'Cooldown', value: `${panel.hwidCooldown || 0} segundos`, inline: true },
-                        { name: 'Script', value: await getScriptName(panel.scriptId), inline: true }
+                        { name: 'Total Keys', value: `${totalKeys}`, inline: true },
+                        { name: 'Keys Usadas', value: `${usedKeys}`, inline: true },
+                        { name: 'Keys Disponibles', value: `${availableKeys}`, inline: true },
+                        { name: 'Cooldown', value: `${panel.hwidCooldown || 0} segundos`, inline: true }
                     )
                     .setColor('#ffa502');
 
@@ -539,148 +711,24 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // ============================================
-// REGISTRAR COMANDOS SLASH
-// ============================================
-async function registerCommands() {
-    try {
-        const commands = [
-            {
-                name: 'keygen',
-                description: 'Genera una key para un panel',
-                options: [
-                    {
-                        name: 'panelkey',
-                        description: 'La key del panel',
-                        type: 3,
-                        required: true
-                    },
-                    {
-                        name: 'duration',
-                        description: 'Duracion de la key',
-                        type: 3,
-                        required: false,
-                        choices: [
-                            { name: '1 Hora', value: '1h' },
-                            { name: '1 Dia', value: '1d' },
-                            { name: '1 Semana', value: '1w' },
-                            { name: '1 Mes', value: '1m' },
-                            { name: '1 Año', value: '1y' },
-                            { name: 'Permanente', value: 'permanent' }
-                        ]
-                    },
-                    {
-                        name: 'note',
-                        description: 'Nota para la key',
-                        type: 3,
-                        required: false
-                    }
-                ]
-            },
-            {
-                name: 'blacklist',
-                description: 'Agrega un usuario a la blacklist de un panel',
-                options: [
-                    {
-                        name: 'usuario',
-                        description: 'El usuario a blacklistear',
-                        type: 6,
-                        required: true
-                    },
-                    {
-                        name: 'panelkey',
-                        description: 'La key del panel',
-                        type: 3,
-                        required: true
-                    },
-                    {
-                        name: 'razon',
-                        description: 'Razon del blacklist',
-                        type: 3,
-                        required: false
-                    }
-                ]
-            },
-            {
-                name: 'resethwid',
-                description: 'Resetea el HWID de un usuario en un panel',
-                options: [
-                    {
-                        name: 'usuario',
-                        description: 'El usuario a resetear',
-                        type: 6,
-                        required: true
-                    },
-                    {
-                        name: 'panelkey',
-                        description: 'La key del panel',
-                        type: 3,
-                        required: true
-                    }
-                ]
-            }
-        ];
-
-        await client.application.commands.set(commands);
-        console.log('Comandos slash registrados globalmente');
-        console.log('Los comandos globales pueden tardar hasta 1 hora en aparecer');
-
-    } catch (error) {
-        console.error('Error registrando comandos:', error);
-    }
-}
-
-// ============================================
-// API: Enviar panel desde el dashboard
-// ============================================
-const express = require('express');
-const app = express();
-const port = process.env.PORT || 10000;
-
-app.use(express.json());
-
-app.post('/api/bot/send-panel', async (req, res) => {
-    try {
-        const { panelId } = req.body;
-        const panel = await Panel.findOne({ _id: panelId });
-        
-        if (!panel) {
-            return res.status(404).json({ error: 'Panel no encontrado' });
-        }
-
-        const result = await sendPanelToDiscord(panel._id.toString(), panel.channelId);
-        
-        if (result.success) {
-            res.json({ success: true, message: 'Panel enviado a Discord' });
-        } else {
-            res.status(500).json({ error: result.error });
-        }
-    } catch (error) {
-        console.error('Error en /api/bot/send-panel:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/health', (req, res) => {
-    res.send('Bot is running');
-});
-
-app.listen(port, '0.0.0.0', () => {
-    console.log(`Health check server running on port ${port}`);
-});
-
-// ============================================
 // INICIAR EL BOT
 // ============================================
 client.login(DISCORD_BOT_TOKEN)
-    .then(async () => {
-        console.log('Bot iniciado');
-        await registerCommands();
+    .then(() => {
+        console.log('🤖 Bot iniciado correctamente');
     })
-    .catch(err => console.error('Error al iniciar bot:', err));
+    .catch(err => {
+        console.error('❌ Error al iniciar bot:', err.message);
+        console.log('💡 Verifica que el token sea correcto');
+    });
 
 // ============================================
-// MANEJO DE ERRORES
+// MANEJO DE ERRORES GLOBALES
 // ============================================
 process.on('unhandledRejection', (error) => {
-    console.error('Unhandled Rejection:', error);
+    console.error('❌ Unhandled Rejection:', error);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
 });
