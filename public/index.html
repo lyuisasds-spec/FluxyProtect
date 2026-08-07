@@ -1584,28 +1584,27 @@
     // ========================================
     // PANEL VIEWS (CORREGIDO)
     // ========================================
-    function openSinglePanelView(id, sidebarEl) {
-        const p = currentPanels.find(x => x.id === id);
-        if (!p) return;
-        activeScriptId = null;
-        activePanelId = id;
-        activeKeysPanelId = null;
+function openSinglePanelView(id, sidebarEl) {
+    const p = currentPanels.find(x => x.id === id);
+    if (!p) return;
+    activeScriptId = null;
+    activePanelId = id;
+    activeKeysPanelId = null;
 
-        const targetScript = currentScripts.find(s => s.id === p.scriptId);
-        document.getElementById('sp-title').innerText = p.name;
-        document.getElementById('sp-id').innerText = `Panel ID: ${p.id}`;
-        document.getElementById('sp-channel').innerText = p.channelId;
-        document.getElementById('sp-script').innerText = targetScript ? targetScript.name : '❌ Script Not Found';
-        document.getElementById('sp-cd').innerText = `${p.hwidCooldown || 0} seconds`;
-        document.getElementById('sp-key').innerText = p.panelKey || 'N/A';
-        
-        document.getElementById('sp-send-btn').onclick = () => sendPanel(p.id);
-        document.getElementById('sp-edit-btn').onclick = () => editPanel(p.id);
-        document.getElementById('sp-delete-btn').onclick = () => deletePanel(p.id);
+    const targetScript = currentScripts.find(s => s.id === p.scriptId);
+    document.getElementById('sp-title').innerText = p.name;
+    document.getElementById('sp-id').innerText = 'Panel ID: ' + p.id;
+    document.getElementById('sp-channel').innerText = p.channelId;
+    document.getElementById('sp-script').innerText = targetScript ? targetScript.name : 'Script Not Found';
+    document.getElementById('sp-cd').innerText = (p.hwidCooldown || 0) + ' seconds';
+    document.getElementById('sp-key').innerText = p.panelKey || 'N/A';
+    
+    document.getElementById('sp-send-btn').onclick = function() { sendPanel(p.id); };
+    document.getElementById('sp-edit-btn').onclick = function() { editPanel(p.id); };
+    document.getElementById('sp-delete-btn').onclick = function() { deletePanel(p.id); };
 
-        switchView('view-single-panel', sidebarEl);
-    }
-
+    switchView('view-single-panel', sidebarEl);
+}
     function editPanel(id) {
         const p = currentPanels.find(x => x.id === id);
         if (!p) return;
@@ -1676,29 +1675,32 @@
         }
     }
 
-    async function sendPanel(id) {
-        if (!confirm("Send panel message to Discord?")) return;
-        const btn = document.getElementById('sp-send-btn');
-        const origText = btn.innerHTML;
-        btn.innerHTML = "⏳ Sending...";
-        btn.disabled = true;
+async function sendPanel(id) {
+    if (!confirm("Enviar panel a Discord?")) return;
+    const btn = document.getElementById('sp-send-btn');
+    const origText = btn.innerText;
+    btn.innerText = "Enviando...";
+    btn.disabled = true;
 
-        try {
-            const res = await fetch(`/api/send-panel/${id}`, { method: 'POST', headers: getHeaders() });
-            const data = await res.json();
-            if (data.success) {
-                alert("✅ Panel sent successfully!");
-            } else {
-                alert(data.error || "Error sending panel.");
-            }
-        } catch (e) {
-            console.error(e);
-            alert("Connection error.");
-        } finally {
-            btn.innerHTML = origText;
-            btn.disabled = false;
+    try {
+        const res = await fetch('/api/send-panel/' + id, {
+            method: 'POST',
+            headers: getHeaders()
+        });
+        const data = await res.json();
+        if (data.success) {
+            alert("Panel enviado a Discord!");
+        } else {
+            alert(data.error || "Error enviando panel.");
         }
+    } catch (e) {
+        console.error(e);
+        alert("Error de conexion.");
+    } finally {
+        btn.innerText = origText;
+        btn.disabled = false;
     }
+}
 
     async function deletePanel(id) {
         if (!confirm("Are you sure you want to delete this panel?")) return;
